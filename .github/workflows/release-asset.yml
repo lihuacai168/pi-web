@@ -1,0 +1,64 @@
+name: Release Asset
+
+# Builds the production bundle and attaches it as a zip to a GitHub Release.
+# Triggers: pushing a v* tag, or workflow_dispatch (tag input, or v<package.json version>).
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to attach the zip to (empty = v<package.json version>)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-asset-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.19.0
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+
+      - name: Resolve release tag
+        id: meta
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            tag="${{ inputs.tag }}"
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            tag="${{ github.ref_name }}"
+          else
+            tag="v$(node -p "require('./package.json').version")"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "asset=pi-web-$tag.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Package zip
+        run: |
+          # Same file set as the npm package (see "files" in package.json), minus
+          # caches and source maps.
+          rm -rf .next/cache .next/dev
+          find .next -name '*.js.map' -delete
+          zip -r "${{ steps.meta.outputs.asset }}" \
+            bin .next public next.config.ts package.json package-lock.json
+          unzip -l "${{ steps.meta.outputs.asset }}" | tail -1
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          files: ${{ steps.meta.outputs.asset }}
+          fail_on_unmatched_files: true
+          make_latest: true
